@@ -100,6 +100,8 @@ testdata/{create,merge,optimise,validate,preview,catalogs}/   fixtures (Go ignor
 | Kubeconfig loading and kubectl's flags (create) | `k8s.io/cli-runtime` (`genericclioptions.ConfigFlags`) |
 | Cluster reads (create) | `k8s.io/client-go` dynamic client, `k8s.io/apimachinery` |
 
+Build and release tools, not Go dependencies and never run by `isc` itself: `just`, git-cliff and goreleaser ([Release automation](#release-automation)).
+
 ### Loading with oc-mirror's own code
 
 oc-mirror v2 has no public packages (everything is under `internal/`, `cmd/` or `v1/`), and Go refuses imports of another module's `internal/`. Rather than reimplement oc-mirror's behaviour, isc keeps a **pinned copy** of the parts it needs in `internal/ocmirror/`:
@@ -122,31 +124,86 @@ oc-mirror v2 has no public packages (everything is under `internal/`, `cmd/` or 
 
 ### Build and release
 
-- **justfile:**
-  - `just build`: `go build` with the version ldflags, into `dist/` (git-ignored);
-  - `just test`: `gofmt -l .` must print nothing, then `go vet ./...` and `go test ./...`;
-  - `just run SUBCOMMAND ...`: `go run .` with the arguments, `[no-cd]` so relative paths work.
-- **Version:** `isc version` and `isc --version` print `main.version`, set with `-ldflags "-X main.version=..."`; `dev` when unset. With `go install`, fall back to `debug.ReadBuildInfo()`'s module version. Also printed: the oc-mirror version and OLM commit the behaviour matches (`docs/compatibility.md`).
-- **CI (GitHub Actions):** on every push and pull request, `just test` (or the same three commands) with the Go version from `go.mod`.
-- **Releases (GitHub Actions + goreleaser):** pushing a `v*` tag runs goreleaser with `.goreleaser.yaml` from the repo:
-  - `CGO_ENABLED=0`, linux/amd64 and linux/arm64 only (no macOS or Windows builds);
-  - a `.tar.gz` per target with `LICENSE` and `README.md`, plus `checksums.txt`;
-  - the version ldflags set from the tag;
-  - published as a GitHub release.
+- **Version:** `isc version` and `isc --version` print `main.version`, set with `-ldflags "-X main.version=..."`; `dev` when unset. With `go install`, fall back to `debug.ReadBuildInfo()`'s module version. Also printed: the oc-mirror version and OLM commit the behaviour matches (`docs/compatibility.md`), and the pinned `internal/ocmirror` commit.
 - **Install:** `go install github.com/ayjM6/isc@latest`, or a release tarball for hosts without Go (e.g. the disconnected side). README documents both.
+
+### Release automation
+
+Releases come only from **semantic-version tags**, never from merges. A manual GitHub Action works out the next version, updates the changelog in a commit on `main` and tags it; the tag push builds and publishes the release. Go has no built-in release versioning, so **git-cliff** does both the version calculation and the changelog; **goreleaser** builds, packages and uploads.
+
+#### Conventional Commits
+
+- Commit subjects follow Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`, `ci:`, `chore:`; breaking changes as `feat!:` / `fix!:` or a `BREAKING CHANGE:` footer. After the prefix: imperative, sentence case, describing the behaviour change.
+- Checked in CI on pull requests: every commit in the range (`just check-commits`) and the PR title (`just check-title`; squash merges use it as the commit subject).
+
+#### Version calculation: `cliff.toml`
+
+- Conventional commit parsing; changelog groups: Features, Bug fixes, Documentation, Refactoring, Build and CI, Other; `chore(release)` commits left out; `require_conventional = true`.
+- `[bump]`: `feat` → minor, `fix` and the rest → patch, breaking → major. **Before 1.0.0, breaking → minor** (`breaking_always_bump_major = false`; revisit at 1.0); `features_always_bump_minor = true`; `initial_tag = "v0.1.0"`.
+- The bump base is the latest tag matching `^v[0-9]+\.[0-9]+\.[0-9]+$`: prerelease tags don't move it.
+
+#### Scripts live in the justfile
+
+Any logic beyond a single tool call is a `just` recipe, not inline shell in workflow YAML, so it can be read and run locally. Workflows install `just` (e.g. `extractions/setup-just`) and call recipes; the YAML only handles triggers, permissions, tokens and checkout.
+
+| Recipe | Does | Used by |
+|---|---|---|
+| `just build` | `go build` with the version ldflags, into `dist/` (git-ignored) | locally |
+| `just test` | `gofmt -l .` prints nothing, `go vet ./...`, `go test ./...` | CI, cut-release, release |
+| `just run SUBCOMMAND ...` | `go run .` with the arguments, `[no-cd]` so relative paths work | locally |
+| `just sync-ocmirror REF` | refresh the pinned oc-mirror copy | CI (drift check), locally |
+| `just check-commits BASE` | Conventional Commits check of `BASE..HEAD` (git-cliff with `require_conventional`) | CI (pull requests) |
+| `just check-title TITLE` | the PR title against the same pattern | CI (pull requests) |
+| `just next-version [BUMP] [PRERELEASE]` | the version cut-release would use: `git cliff --bumped-version`, or `--bump patch\|minor\|major`; prerelease numbering from existing tags (`rc` → `-rc.1`, `-rc.2`, ...); fails if the tag exists or nothing is unreleased | cut-release, locally |
+| `just changelog` | the unreleased section, on stdout | locally |
+| `just prepare-release VERSION` | regenerate `CHANGELOG.md` (`git cliff --tag VERSION -o CHANGELOG.md`), commit it as `chore(release): VERSION`, annotated tag `VERSION`; no push | cut-release |
+| `just check-tag TAG` | strict semver check (`^v(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`) and the tagged commit is on `main` (`git merge-base --is-ancestor`) | release |
+| `just release-notes TAG` | that tag's section (`git cliff --current --strip all`), on stdout | release |
+| `just release-snapshot` | `goreleaser check`, then `goreleaser release --snapshot --clean` | CI, locally |
+
+Pushing and publishing (`git push --atomic`, `goreleaser release`) stay as workflow steps, so nothing run locally pushes or publishes by accident.
+
+#### Workflow: CI (`.github/workflows/ci.yml`)
+
+On every push and pull request, with the Go version from `go.mod`: `just test`; `just sync-ocmirror` at the pinned commit leaves the tree unchanged; `just release-snapshot` (both targets build); on pull requests, `just check-commits` and `just check-title`.
+
+#### Workflow: cut-release (`.github/workflows/cut-release.yml`, manual)
+
+- **Trigger:** `workflow_dispatch`, on `main` only (refuses other refs). Inputs: `bump: auto|patch|minor|major` (default `auto`) and `prerelease` (optional identifier, e.g. `rc`).
+- **Concurrency:** one run at a time.
+- **Auth:** a GitHub App installed on the repo with `contents: write`, allowed to bypass `main`'s protection. The workflow mints a short-lived token with `actions/create-github-app-token` (secrets `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`). Pushes made with it trigger the release workflow; pushes with the default `GITHUB_TOKEN` wouldn't.
+- **Steps:** checkout `main` with full history and tags, using the App token; `just test` (no release from a red `main`); `VERSION=$(just next-version BUMP PRERELEASE)`; `just prepare-release VERSION`, committed and tagged as the App's bot user; `git push --atomic origin main VERSION`, so the commit and the tag land together or not at all.
+- The run's summary shows the version and the new changelog section.
+
+#### Workflow: release (`.github/workflows/release.yml`, on tag push)
+
+- **Trigger:** push of a tag matching `v*`; `just check-tag` then rejects anything that isn't strict semver or isn't on `main`, publishing nothing.
+- **Steps:** checkout with history; `just test`; `just release-notes TAG > RELEASE_NOTES.md`; `goreleaser release --clean --release-notes RELEASE_NOTES.md`.
+- **Permissions:** `contents: write` only.
+- **goreleaser** (`.goreleaser.yaml`):
+  - `CGO_ENABLED=0`, linux/amd64 and linux/arm64 only (no macOS or Windows builds);
+  - a `.tar.gz` per target with the binary, `LICENSE`, `README.md` and `CHANGELOG.md`, plus `checksums.txt`;
+  - the version ldflags set from the tag;
+  - goreleaser's own changelog disabled: git-cliff's notes are the release description;
+  - `release.prerelease: auto`, so a `-rc.N` tag becomes a GitHub prerelease.
+- A tag pushed by hand (by someone allowed to) also releases, with git-cliff's notes; `CHANGELOG.md` then catches up at the next cut-release.
+
+#### One-time setup (README, maintainers section)
+
+Create the GitHub App and its two secrets; add the App as a bypass actor on `main`'s protection; protect `v*` tags so only the App (and admins) can create them.
 
 ### Build order
 
 Each step is one commit, or a short series, and leaves `just test` passing. README updates land with each step, not at the end.
 
-1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile (with `sync-ocmirror`), the first `internal/ocmirror/` copy, CI workflow (including the sync check), `.goreleaser.yaml` and release workflow, `.gitignore`.
+1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile with the recipes above, the first `internal/ocmirror/` copy, `cliff.toml`, `.goreleaser.yaml`, the three workflows (CI, cut-release, release), a placeholder `CHANGELOG.md`, `.gitignore`.
 2. **Documents:** `internal/isc` on top of `ocmirror/config`, and `internal/yamlnode`.
 3. **`isc validate`:** static tier; then `internal/catalog` and the catalog tier; then `internal/olm` and the upgrade-path tier.
 4. **`isc preview`:** selection and views; `--with-sizes`; the list subcommands; `operator-graph`.
 5. **`isc operators optimise`,** reusing `internal/catalog`, `internal/validate` and `internal/preview`, following its plan's build steps.
 6. **`isc merge`.**
 7. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
-8. **First tagged release.**
+8. **First release** through the cut-release action: a `-rc.1` prerelease first, then the release.
 9. **Move the practices into `AGENTS.md`:** once the commands are built, move the consistent practices that proved out (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, testing patterns) from this plan into `AGENTS.md`, as instructions for keeping commands consistent. Until then, this plan's shared behaviour is the source of truth.
 
 ### Upstream (oc-mirror)
@@ -176,7 +233,11 @@ Also worth upstreaming: making oc-mirror's config, API types and filter conversi
 - **Loader:** oc-mirror's own `load_test.go` and `validate_test.go` cases, run against the copy, give the same results; errors name the file; a valid ISC with every v2alpha1 section is accepted.
 - **Sync:** `just sync-ocmirror` at the pinned commit leaves the tree unchanged (CI).
 - **CI** green on the pull request.
-- **Release dry run:** `goreleaser release --snapshot --clean` builds both targets locally; `isc version` on each built binary (arm64 under emulation or on an arm64 host) prints the snapshot version.
+- **Conventional Commits:** a pull request with a free-form commit or title fails `just check-commits` / `just check-title`.
+- **Versioning:** on a scratch branch with sample commits, `just next-version` gives feat → minor, fix → patch, breaking (pre-1.0) → minor; with `prerelease: rc`, `-rc.1` then `-rc.2`; it fails when the tag exists or nothing is unreleased. `just changelog` groups them.
+- **Release dry run:** `just release-snapshot` builds both targets locally; `isc version` on each built binary (arm64 under emulation or on an arm64 host) prints the snapshot version.
+- **First real release:** cut-release with `prerelease: rc` puts a `chore(release)` commit and a `v0.1.0-rc.1` tag on `main`; the release workflow publishes a GitHub prerelease with both tarballs, `checksums.txt`, and git-cliff's notes as its description. Then a run without `prerelease`.
+- **Bad tags:** pushing `v1.2` or `vfoo` triggers the release workflow, which fails `just check-tag` and publishes nothing.
 - **End to end (connected session):** `isc create --from-cluster` on two real clusters (read-only), `isc merge`, a hand-made change (an added and a removed operator), `isc operators optimise` and `isc validate` against `registry.redhat.io`, then `oc-mirror --v2 --dry-run` on the result.
 
 ## What was and wasn't run

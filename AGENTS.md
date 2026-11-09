@@ -73,8 +73,10 @@ Until the commands are built, the shared behaviour (input and output, loading wi
 
 ## Git
 
-- **Commit subjects:** imperative, sentence case, no prefix, describing the behaviour change.
+- **Commit subjects:** [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`, `ci:`, `chore:`; mark breaking changes with `!` (`feat!:`) or a `BREAKING CHANGE:` footer. After the prefix: imperative, sentence case, describing the behaviour change. They drive the version bump and the changelog, and CI checks them (`just check-commits`).
 - **Branches:** one feature per branch, based on current `main`.
 - **Each commit leaves `go vet` and `go test` passing.**
 - **Commit, push or merge only when asked.**
-- **Releases:** pushing a `v*` tag runs goreleaser and publishes a GitHub release. Never tag or release unless asked; check locally with `goreleaser release --snapshot --clean`.
+- **Releases:** cut with the manual cut-release GitHub Action (it bumps the version with git-cliff, commits `CHANGELOG.md` and tags `main`); the tag push publishes the release. Never tag, push tags or run cut-release unless asked; check packaging locally with `just release-snapshot`, and the next version with `just next-version`.
+- **`CHANGELOG.md` is generated** by git-cliff: don't edit it by hand.
+- **Scripts are `just` recipes:** any logic beyond a single tool call goes in the justfile, not inline in workflow YAML or ad hoc scripts.
