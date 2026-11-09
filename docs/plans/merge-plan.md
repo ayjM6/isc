@@ -57,7 +57,7 @@ Smallest wins.
 
 - A complete ISC; comments aren't carried over (the output is a new document built from several).
 - **Deterministic:** keyed lists sorted by key (catalogs by reference, packages and channels by name, images by name, ...); plain lists (`architectures`, `imagePaths`) deduplicated and sorted. Merging the same inputs in any order gives the same output, apart from the first-input spelling rule.
-- Checked with the oc-mirror-style loader before it's written.
+- Checked with oc-mirror's own `ReadConfig` before it's written.
 - **`-v`:** one line per item that came from more than one input, with the value kept and where the others came from, e.g.
 
   ```
@@ -65,6 +65,11 @@ Smallest wins.
   ```
 
   The input file name stands for the cluster: oc-mirror rejects unknown ISC fields, so `create` can't record the cluster name inside the ISC.
+
+## Upstream (oc-mirror)
+
+- **Worth upstreaming: partly.** oc-mirror reads one config (`-c`, loaded by `ReadConfig` in `internal/pkg/config/load.go`). Accepting several configs and merging them with these rules would remove the need for this command, but merging is general ISC tooling and may not belong in the mirroring tool.
+- **Still needed if oc-mirror followed the upgrade graph for operators: yes.** Merging is unrelated to upgrade graphs.
 
 ## Open questions (proposed answers)
 
@@ -80,7 +85,7 @@ Smallest wins.
   - `archiveSize`: smallest kept.
 - **Errors** (exit 1, nothing on stdout), each naming both files: different `targetCatalog`, `targetTag`, `targetCatalogSourceTemplate`, `skipDependencies` or `defaultChannel`; different `release`; an additional image with a different `tagsByRegex`, `targetRepo` or `targetTag`; a helm repository with a different `url`; a chart with a different `path`; a version that isn't semver; an input the loader rejects (e.g. `metadata`).
 - **Properties:** any input order gives the same output; merging the output with a further ISC equals merging them all at once; merging one file returns it, sorted.
-- **End to end:** `isc create --from-cluster` on two real clusters, `isc merge`, `isc operators optimise`, then `oc-mirror --v2 --dry-run`.
+- **End to end:** `isc create --from-cluster` on two real clusters, `isc merge`, `isc operators optimise`, `isc validate`, then `oc-mirror --v2 --dry-run`.
 
 ## What was and wasn't run
 

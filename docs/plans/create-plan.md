@@ -18,7 +18,8 @@ It's the first step of the pipeline:
 2. [`isc merge`](merge-plan.md) the results: every operator, lowest `minVersion` per catalog;
 3. optionally, your own changes outside isc (see the [tool plan](isc-tool-plan.md#scope));
 4. [`isc operators optimise`](optimise-plan.md): the smallest selection that still lets clusters upgrade;
-5. oc-mirror.
+5. [`isc validate`](validate-plan.md);
+6. oc-mirror.
 
 ## Plan / Design decisions
 
@@ -94,6 +95,11 @@ Two Subscriptions in different namespaces with different versions: keep the lowe
 - Output on stdout, as every command does ([shared behaviour](isc-tool-plan.md#shared-behaviour-every-command)).
 - **`-v`:** each package found and where it came from: namespace/Subscription or ClusterExtension, CatalogSource or ClusterCatalog, and CSV or bundle. Every package is reported, so a missing operator is easy to spot.
 
+## Upstream (oc-mirror)
+
+- **Worth upstreaming: partly.** Generating an ISC from what a cluster runs is a natural companion to oc-mirror (or an `oc adm` command), but oc-mirror never talks to clusters today: it reads an ISC and registries. An `oc` plugin may fit better than oc-mirror itself.
+- **Still needed if oc-mirror followed the upgrade graph for operators: yes.** It supplies the installed versions that such a mode would start from.
+
 ## Open questions (proposed answers)
 
 1. **Package-level vs channel `minVersion`:** a package-level range applies to every channel of the package in oc-mirror's filter.
@@ -111,7 +117,7 @@ Two Subscriptions in different namespaces with different versions: keep the lowe
 - **Kubeconfig selection:** the current context by default, `--context`, `KUBECONFIG` with two files merged, `--kubeconfig` overriding `KUBECONFIG`, an unknown context (error); tested on the `ConfigFlags` result, without a cluster.
 - **Usage:** no `--from-cluster` is a usage error (exit 2).
 - **Shared failure paths:** an unreadable kubeconfig, an unreachable API server, a failed catalog fetch: exit 1, nothing on stdout.
-- **End to end:** run it on a real cluster, read-only, then `isc merge`, `isc operators optimise` and `oc-mirror --v2 --dry-run`.
+- **End to end:** run it on a real cluster, read-only, then `isc merge`, `isc operators optimise`, `isc validate` and `oc-mirror --v2 --dry-run`.
 
 ## What was and wasn't run
 

@@ -11,17 +11,19 @@ The tools were first planned in [oc-mirror-automation](https://github.com/tom-st
 | `isc create --from-cluster` | one ISC per cluster, every installed operator pinned to its installed version | planned | [create-plan.md](create-plan.md) |
 | `isc merge` | combines ISCs into one that mirrors at least what each of them does | planned | [merge-plan.md](merge-plan.md) |
 | `isc operators optimise` | the smallest operator selection that still lets clusters upgrade | planned | [optimise-plan.md](optimise-plan.md) |
+| `isc validate` | checks an ISC is valid and will run with oc-mirror, and that clusters could upgrade | planned | [validate-plan.md](validate-plan.md) |
 
 ```
 isc create --from-cluster [kubectl flags: --kubeconfig, --context, ...] [catalog flags] [-v]
 isc merge [-v] FILE...
 isc operators optimise [-o yaml|json|kyaml|diff|text|table] [--interactive] [--check] [--package NAME]... [catalog flags] [-v] FILE
+isc validate [--offline] [--strict] [catalog flags] [-v] FILE...
 isc version
 ```
 
 Catalog flags: `--cache-dir DIR`, `--authfile FILE`, `--tls-verify=false`, `--platform OS/ARCH`, `--fetch-timeout SECONDS`.
 
-`isc create` and `isc merge` work on the whole ISC, so they're top level. `isc operators optimise` only touches `mirror.operators`, so it sits under `isc operators`; a future command for `platform` or `additionalImages` would get its own group.
+`isc create`, `isc merge` and `isc validate` work on the whole ISC, so they're top level. `isc operators optimise` only touches `mirror.operators`, so it sits under `isc operators`; a future command for `platform` or `additionalImages` would get its own group.
 
 Pipeline:
 
@@ -29,13 +31,14 @@ Pipeline:
 2. `isc merge cluster-*.yaml > merged.yaml`.
 3. Optionally, your own changes, outside isc: other tools or hand edits (see [Scope](#scope)).
 4. `isc operators optimise merged.yaml > isc.yaml`.
-5. `oc-mirror --v2 -c isc.yaml ...`.
+5. `isc validate isc.yaml`.
+6. `oc-mirror --v2 -c isc.yaml ...`.
 
 ## Plan / Design decisions
 
 ### Scope
 
-isc reads and writes **plain oc-mirror ISCs only**. Changing an ISC beyond what these commands do (adding or removing operators, overriding fields, copying a catalog's packages to another version) is left to other tools or hand edits. Because isc loads ISCs as oc-mirror does (see [Loading like oc-mirror](#loading-like-oc-mirror)), anything oc-mirror rejects, such as a `metadata` block, is an error rather than silently passed on.
+isc reads and writes **plain oc-mirror ISCs only**. Changing an ISC beyond what these commands do (adding or removing operators, overriding fields, copying a catalog's packages to another version) is left to other tools or hand edits. Because isc loads ISCs with oc-mirror's own code (see [Loading with oc-mirror's own code](#loading-with-oc-mirrors-own-code)), anything oc-mirror rejects, such as a `metadata` block, is an error rather than silently passed on.
 
 ### Layout
 
@@ -45,19 +48,21 @@ One module, `github.com/ayjM6/isc`, one binary, at the root of this repo.
 go.mod                      module github.com/ayjM6/isc
 main.go                     calls cli.Execute()
 internal/cli/               one cobra command per file: root.go, version.go, create.go, merge.go,
-                            operators.go (the group), operators_optimise.go
+                            validate.go, operators.go (the group), operators_optimise.go
                             (flags, usage, building the options; no logic)
 internal/yamlnode/          yaml.v3 node helpers, flatten.go, encode.go (2-space encoder)
-internal/isc/               load.go + types.go: loading and checking like oc-mirror (below);
-                            Document: an ISC as a yaml.v3 node tree with typed accessors
+internal/ocmirror/          pinned copy of oc-mirror code (below); never edited by hand
+internal/isc/               Document: an ISC loaded with ocmirror/config, as a yaml.v3 node tree
+                            plus the typed v2alpha1 view
 internal/catalog/           digest lookup, OCI copy, configs extraction, digest-keyed cache
 internal/create/
 internal/merge/
+internal/validate/          static, catalog and upgrade-path checks (validate plan); used by optimise
 internal/optimise/          with internal/olm/, internal/mirrorfilter/, internal/versions/ (optimise plan)
-testdata/{create,merge,optimise,catalogs}/   fixtures (Go ignores testdata/ when building)
+testdata/{create,merge,optimise,validate,catalogs}/   fixtures (Go ignores testdata/ when building)
 ```
 
-- **Why one program:** the commands share the loader, the YAML node helpers, reference parsing, semver ordering and catalog access (optimise, and create for ClusterExtensions). One module means one `go.mod` to keep in step with oc-mirror's pins, and one build cache.
+- **Why one program:** the commands share the loader and oc-mirror's code, the checks, the YAML node helpers, reference parsing, semver ordering and catalog access (optimise, and create for ClusterExtensions). One module means one `go.mod` to keep in step with oc-mirror's pins, and one build cache.
 - **`internal/`** so nothing outside the module depends on the packages before their APIs settle.
 
 ### Shared behaviour (every command)
@@ -68,12 +73,12 @@ testdata/{create,merge,optimise,catalogs}/   fixtures (Go ignores testdata/ when
   - `-o FORMAT` exists only on a command that can output different formats (so far: optimise).
   - The output is built and checked in memory and written to stdout only on success: a failure writes nothing to stdout.
 - **YAML:** `gopkg.in/yaml.v3` nodes, so comments and key order are kept where a command edits an existing ISC. Output is encoded with 2-space indent.
-- **Loaded like oc-mirror:** every input is loaded and checked the way oc-mirror loads an ISC before any work starts, and every output is checked the same way before it's written. isc never accepts or outputs an ISC that oc-mirror's loader would reject. See [Loading like oc-mirror](#loading-like-oc-mirror).
+- **Loaded with oc-mirror's own code:** every input is loaded with oc-mirror's `ReadConfig` before any work starts, and every output is checked the same way before it's written. isc never accepts or outputs an ISC that oc-mirror would reject when loading it. See [Loading with oc-mirror's own code](#loading-with-oc-mirrors-own-code).
 - **Outputs** are complete ISCs (`apiVersion: mirror.openshift.io/v2alpha1`, `kind`, `mirror`).
 - **Messages:** on stderr, one line each: `review` lines always, decisions only with `-v`. Errors as `error: ...`, naming the file (and package or field) involved. Interactive prompts also go to stderr, with answers read from the terminal.
-- **Exit codes:** 0 success, 1 runtime error, 2 usage error, 3 `--check` found changes (optimise only).
+- **Exit codes:** 0 success, 1 runtime error (and, for validate, an invalid ISC), 2 usage error, 3 `--check` found changes (optimise only).
 - **Determinism:** the same inputs give the same output bytes.
-- **Catalog access:** shared by optimise and create, done the way oc-mirror does it; see [optimise-plan.md](optimise-plan.md#catalog-access). Same flags in both: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`.
+- **Catalog access:** shared by validate, optimise and create, done the way oc-mirror does it; see [optimise-plan.md](optimise-plan.md#catalog-access). Same flags in both: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`.
 - **Libraries, not binaries:** no `opm`, `oc`, `skopeo` or `oc-mirror` subprocesses. oc-mirror's own helpers are under `internal/` and can't be imported, so the module uses the libraries they're built on:
 
 | Need | Library |
@@ -83,25 +88,32 @@ testdata/{create,merge,optimise,catalogs}/   fixtures (Go ignores testdata/ when
 | Reading the OCI layout and extracting the configs layer | `github.com/google/go-containerregistry` |
 | Catalog model | `github.com/operator-framework/operator-registry` v1.74.0 (`alpha/declcfg`, `alpha/model`, `alpha/property`) |
 | oc-mirror's operator filter | `github.com/sherine-k/catalog-filter` (the version oc-mirror pins) |
-| Loading like oc-mirror; KYAML output | `sigs.k8s.io/yaml` v1.6.0+ (`UnmarshalStrict`, `YAMLToJSON`, `kyaml`), `encoding/json` (`DisallowUnknownFields`) |
+| oc-mirror's config loading, validation, API types and filter conversion | pinned copy in `internal/ocmirror/` (below), from `github.com/openshift/oc-mirror/v2` |
+| KYAML output | `sigs.k8s.io/yaml` v1.6.0+ (`kyaml`) |
 | Version ordering, `skipRange` | `github.com/blang/semver/v4` (`ParseTolerant`, `Compare`, `ParseRange`) |
 | Filter version semantics | `github.com/Masterminds/semver/v3` |
 | Kubeconfig loading and kubectl's flags (create) | `k8s.io/cli-runtime` (`genericclioptions.ConfigFlags`) |
 | Cluster reads (create) | `k8s.io/client-go` dynamic client, `k8s.io/apimachinery` |
 
-### Loading like oc-mirror
+### Loading with oc-mirror's own code
 
-oc-mirror's loader is in `internal/pkg/config` and can't be imported, so `internal/isc` repeats its steps, citing the source (`load.go` `ReadConfig` / `LoadConfig`, oc-mirror `upstream/main` at `4802bb8d`):
+oc-mirror v2 has no public packages (everything is under `internal/`, `cmd/` or `v1/`), and Go refuses imports of another module's `internal/`. Rather than reimplement oc-mirror's behaviour, isc keeps a **pinned copy** of the parts it needs in `internal/ocmirror/`:
 
-1. `sigs.k8s.io/yaml.UnmarshalStrict` into a map (rejects malformed YAML, e.g. duplicate keys);
-2. `kind` present and equal to `ImageSetConfiguration`; a `mirror` stanza present; no `delete` stanza;
-3. `sigs.k8s.io/yaml.YAMLToJSON`, then `encoding/json` with `DisallowUnknownFields` into `types.go`: our own copy of the v2alpha1 field set (`internal/pkg/api/v2alpha1`: `TypeMeta`, `mirror` with `platform`, `operators`, `additionalImages`, `helm`, `blockedImages`, `samples`, and `archiveSize`). Any unknown field fails, including `metadata`;
-4. the duplicate-catalog rule from `validate.go` (`validateOperatorOptions`, key from `GetUniqueName`).
+| Copy | From oc-mirror | How |
+|---|---|---|
+| `internal/ocmirror/config` | `internal/pkg/config`: `load.go`, `validate.go`, `defaults.go`, `metadata.go` (not `pin_catalogs.go`, which needs the mirror copier) | whole files |
+| `internal/ocmirror/api/v2alpha1` | `internal/pkg/api/v2alpha1` | whole package |
+| `internal/ocmirror/image`, `internal/ocmirror/consts` | `internal/pkg/image`, `internal/pkg/consts` | whole packages |
+| `internal/ocmirror/operator/filter.go` | `filterPackage`, `filterFromImageSetConfig`, `filterCatalog` from `internal/pkg/operator/catalog_handler.go` (the rest of that file needs the mirror copier, logging and manifest packages) | functions, extracted by name |
 
-- Errors keep oc-mirror's wording where it has one, prefixed with the file name.
-- Only these rules are repeated. The rest of `Validate` (platform and other field rules) isn't; `oc-mirror --v2 --dry-run` remains the final check.
-- The typed struct is only for checking. Reading and editing still use yaml.v3 nodes, so comments and key order are kept.
-- `types.go` follows oc-mirror's field set; check it against oc-mirror when moving the pins, and name the oc-mirror commit it matches in a comment.
+- **Unmodified except import paths.** About 1,300 lines; their other imports (`sigs.k8s.io/yaml`, Masterminds semver, apimachinery, go-digest, operator-registry, catalog-filter) are dependencies anyway.
+- **Sync:** `just sync-ocmirror REF` fetches the pinned module (`go mod download github.com/openshift/oc-mirror/v2@REF`), copies the files and functions, and rewrites import paths. CI re-runs it at the pinned commit and fails on any diff. Never edit `internal/ocmirror/` by hand: change the pin and re-sync.
+- **Pin:** the oc-mirror commit (`4802bb8d` when planned), recorded in `internal/ocmirror/README.md` and `docs/compatibility.md`, and printed by `isc version`. Moving it means re-syncing and re-running the tests.
+- **Licence:** oc-mirror is Apache-2.0. The copied files keep their headers; `internal/ocmirror/LICENSE` holds the Apache-2.0 text, and the README states the source, the commit and the import-path change.
+- **Loading** is `ocmirror/config.ReadConfig`: strict YAML, `kind` and stanza checks, unknown fields rejected (including `metadata`), and all of `Validate` (duplicate catalogs, packages and channels; semver versions; package and channel ranges not mixed; duplicate release channels; `platform.platforms` with `platform.architectures`; blocked-image regexes). So every command accepts exactly what oc-mirror accepts.
+- `internal/isc.Document` keeps the typed `v2alpha1.ImageSetConfiguration` for reading and the yaml.v3 node tree for editing, so comments and key order are kept.
+- **Not copied:** oc-mirror's catalog extraction (`EnsureCatalogInOCIFormat`, `ExtractOCIConfigLayers`, `ExtractOCILayers`) depends on its mirror copier and archive packages, so `internal/catalog` implements the same steps, citing them ([optimise plan](optimise-plan.md#catalog-access)).
+- **Upstream:** ask oc-mirror to expose its config, API types and filter conversion as public packages; then drop the copy.
 
 ### Build and release
 
@@ -122,28 +134,43 @@ oc-mirror's loader is in `internal/pkg/config` and can't be imported, so `intern
 
 Each step is one commit, or a short series, and leaves `just test` passing. README updates land with each step, not at the end.
 
-1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile, CI workflow, `.goreleaser.yaml` and release workflow, `.gitignore`.
-2. **Loader and documents:** `internal/isc` (loading like oc-mirror) and `internal/yamlnode`.
-3. **`isc operators optimise`,** following its plan's build steps; catalog access comes first.
-4. **`isc merge`.**
-5. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
-6. **First tagged release.**
-7. **Move the practices into `AGENTS.md`:** once the commands are built, move the consistent practices that proved out (input and output, loading like oc-mirror, messages, exit codes, catalog access, testing patterns) from this plan into `AGENTS.md`, as instructions for keeping commands consistent. Until then, this plan's shared behaviour is the source of truth.
+1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile (with `sync-ocmirror`), the first `internal/ocmirror/` copy, CI workflow (including the sync check), `.goreleaser.yaml` and release workflow, `.gitignore`.
+2. **Documents:** `internal/isc` on top of `ocmirror/config`, and `internal/yamlnode`.
+3. **`isc validate`:** static tier; then `internal/catalog` and the catalog tier; then the upgrade-path tier.
+4. **`isc operators optimise`,** reusing `internal/catalog` and `internal/validate`, following its plan's build steps.
+5. **`isc merge`.**
+6. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
+7. **First tagged release.**
+8. **Move the practices into `AGENTS.md`:** once the commands are built, move the consistent practices that proved out (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, testing patterns) from this plan into `AGENTS.md`, as instructions for keeping commands consistent. Until then, this plan's shared behaviour is the source of truth.
+
+### Upstream (oc-mirror)
+
+Each command plan has an "Upstream (oc-mirror)" section. In summary:
+
+| Command | Worth upstreaming into oc-mirror? | Still needed if oc-mirror followed the upgrade graph for operators? |
+|---|---|---|
+| `create --from-cluster` | **Partly.** Generating an ISC from what a cluster runs fits oc-mirror (or `oc adm`), but oc-mirror never talks to clusters today; an `oc` plugin may fit better. | **Yes.** It supplies the installed versions such a mode would start from. |
+| `merge` | **Partly.** oc-mirror takes one `-c`; accepting several configs and merging them with these rules would remove the need, but it's general ISC tooling. | **Yes.** Unrelated to upgrade graphs. |
+| `operators optimise` | **Yes, as the feature itself:** operator upgrade-graph traversal in oc-mirror's filter. | **No.** oc-mirror would mirror the path itself. |
+| `validate` | **Yes.** The static tier is oc-mirror's already; the catalog tier is its filter run early (`--dry-run` failing fast, or a `validate` subcommand). | **Partly.** Static and catalog tiers still needed; the upgrade-path tier isn't. |
+
+Also worth upstreaming: making oc-mirror's config, API types and filter conversion public packages, so isc can drop its copy.
 
 ## Open questions (proposed answers)
 
 1. **Reading clusters in Go or Ansible?** Decided: Go, as `isc create --from-cluster`, because the ClusterExtension catalog choice needs the catalog access optimise has. An Ansible role can still call it per inventory host.
-2. **Dependency weight:** operator-registry already brings client-go, so create's dynamic client and cli-runtime add little. Proposed: accept it; check `go mod why` after step 5, and record the release binary size per target.
+2. **Dependency weight:** operator-registry already brings client-go, so create's dynamic client and cli-runtime add little. Proposed: accept it; check `go mod why` after step 6, and record the release binary size per target.
 
 ## Verification
 
 - **Static:** `gofmt -l` empty, `go vet ./...`.
 - **Unit and fixture tests** (`go test ./...`), no network or cluster, as listed in each command's plan.
 - **Shared:** a failure writes nothing to stdout and exits 1; usage errors exit 2; the input file is unchanged after every command; the same inputs give the same output bytes.
-- **Loader:** each step's rejection (malformed YAML and a duplicate key, missing or wrong `kind`, missing `mirror`, a `delete` stanza, an unknown field at top level and nested, `metadata`, a duplicate catalog), each naming the file; a valid ISC with every v2alpha1 section accepted; the cases in oc-mirror's `load_test.go` and the duplicate cases in `validate_test.go` give the same accept/reject result.
+- **Loader:** oc-mirror's own `load_test.go` and `validate_test.go` cases, run against the copy, give the same results; errors name the file; a valid ISC with every v2alpha1 section is accepted.
+- **Sync:** `just sync-ocmirror` at the pinned commit leaves the tree unchanged (CI).
 - **CI** green on the pull request.
 - **Release dry run:** `goreleaser release --snapshot --clean` builds both targets locally; `isc version` on each built binary (arm64 under emulation or on an arm64 host) prints the snapshot version.
-- **End to end (connected session):** `isc create --from-cluster` on two real clusters (read-only), `isc merge`, a hand-made change (an added and a removed operator), `isc operators optimise` against `registry.redhat.io`, then `oc-mirror --v2 --dry-run` on the result.
+- **End to end (connected session):** `isc create --from-cluster` on two real clusters (read-only), `isc merge`, a hand-made change (an added and a removed operator), `isc operators optimise` and `isc validate` against `registry.redhat.io`, then `oc-mirror --v2 --dry-run` on the result.
 
 ## What was and wasn't run
 

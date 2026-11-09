@@ -8,11 +8,12 @@
 2. `isc merge`: combine them into one ISC that mirrors at least what each does (every operator, lowest `minVersion` per catalog).
 3. Optionally, your own changes, outside isc (other tools or hand edits).
 4. `isc operators optimise`: the smallest operator selection that still lets clusters upgrade.
-5. `oc-mirror --v2` on the result.
+5. `isc validate`: check it's valid and will run with oc-mirror.
+6. `oc-mirror --v2` on the result.
 
 The design is in [docs/plans/](docs/plans/). Read the relevant plan before changing behaviour:
 - [isc-tool-plan.md](docs/plans/isc-tool-plan.md): layout, shared behaviour, libraries, build and release, and the build order (what to do next);
-- one plan per subcommand, holding its rules and the oc-mirror / OLM sources they rely on: [create](docs/plans/create-plan.md), [merge](docs/plans/merge-plan.md), [optimise](docs/plans/optimise-plan.md).
+- one plan per subcommand, holding its rules and the oc-mirror / OLM sources they rely on: [create](docs/plans/create-plan.md), [merge](docs/plans/merge-plan.md), [optimise](docs/plans/optimise-plan.md), [validate](docs/plans/validate-plan.md).
 
 The tools were first planned in oc-mirror-automation; `isc` is written from scratch here.
 
@@ -23,10 +24,11 @@ go.mod                  module github.com/ayjM6/isc
 main.go                 calls cli.Execute()
 internal/cli/           one cobra command per file: flags, usage, building options; no logic
 internal/yamlnode/      yaml.v3 node helpers, flattening, 2-space encoder
-internal/isc/           loading and checking like oc-mirror; ISC accessors on a node tree
+internal/ocmirror/      pinned copy of oc-mirror code (config loading, validation, API types, filter conversion)
+internal/isc/           ISC documents loaded with ocmirror/config: node tree plus typed view
 internal/catalog/       digest lookup, OCI copy, configs extraction, digest-keyed cache
-internal/{create,merge,optimise}/   optimise also uses internal/{olm,mirrorfilter,versions}/
-testdata/{create,merge,optimise,catalogs}/
+internal/{create,merge,optimise,validate}/   optimise also uses internal/{olm,mirrorfilter,versions}/
+testdata/{create,merge,optimise,validate,catalogs}/
 docs/plans/             plans, one per feature
 ```
 
@@ -34,9 +36,10 @@ Everything is under `internal/` until the APIs settle.
 
 ## Behaviour every command keeps
 
-Until the commands are built, the shared behaviour (input and output, loading like oc-mirror, messages, exit codes, catalog access, libraries) is defined in the tool plan's [Shared behaviour](docs/plans/isc-tool-plan.md#shared-behaviour-every-command) section: follow it, and change it there first. It moves here once it has proved out (the tool plan's last build step).
+Until the commands are built, the shared behaviour (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, libraries) is defined in the tool plan's [Shared behaviour](docs/plans/isc-tool-plan.md#shared-behaviour-every-command) section: follow it, and change it there first. It moves here once it has proved out (the tool plan's last build step).
 
 - **Read-only against clusters:** `isc create --from-cluster` only lists and gets.
+- **Never edit `internal/ocmirror/` by hand:** it's a pinned copy of oc-mirror's code; change the pin and run `just sync-ocmirror`.
 
 ## Go style
 

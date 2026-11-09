@@ -12,7 +12,7 @@ isc operators optimise [-o yaml|json|kyaml|diff|text|table] [--interactive] [--c
                        [-v] FILE
 ```
 
-Alias: `optimize`. Input, output, messages and exit codes follow the tool plan's [shared behaviour](isc-tool-plan.md#shared-behaviour-every-command).
+Alias: `optimize`. Run [`isc validate`](validate-plan.md) on the result before oc-mirror. Input, output, messages and exit codes follow the tool plan's [shared behaviour](isc-tool-plan.md#shared-behaviour-every-command).
 
 ### Why
 
@@ -90,8 +90,8 @@ For each channel a heads-only mirror would include, if the head's only edge is `
 
 ### Invalid candidates are discarded
 
-- A candidate is offered (to auto, `--interactive`, and as the report's choice) only if what it produces is valid: the resulting ISC passes the oc-mirror-style loader ([Loading like oc-mirror](isc-tool-plan.md#loading-like-oc-mirror)), and the catalog-filter run for that catalog entry succeeds. A `minVersion` that empties the default channel, or a `defaultChannel` the filter rejects, makes a candidate invalid.
-- The report still lists discarded candidates, marked invalid, with the loader or filter error.
+- A candidate is offered (to auto, `--interactive`, and as the report's choice) only if what it produces is valid: it passes [`isc validate`](validate-plan.md)'s static and catalog tiers (`internal/validate`): oc-mirror's own `ReadConfig` and filter accept it. A `minVersion` that empties the default channel, or a `defaultChannel` the filter rejects, makes a candidate invalid.
+- The report still lists discarded candidates, marked invalid, with validate's error.
 - **If no candidate is valid and covers every upgrade path,** the package keeps the `minVersion` currently configured, unchanged, with a `review` line (and the filter's error if the input itself fails it). `--interactive` doesn't prompt for such a package.
 
 ### Choosing per package: `--interactive`
@@ -126,12 +126,12 @@ On stdout, built in memory and written only on success:
 
 - Flatten anchors, aliases and `<<` merge keys first (`internal/yamlnode`), so a change to one entry can't leak into another through a shared node; the output is plain.
 - Edit the yaml.v3 node tree, so comments, key order and unrelated sections are kept.
-- **Self-check before output:** load the result with the oc-mirror-style loader, run the per-catalog filter, and confirm every chosen candidate's upgrade paths are fully mirrored; otherwise output nothing and exit 1.
+- **Self-check before output:** run all three tiers of `internal/validate` on the result (static, catalog, upgrade paths); any error means nothing is output and exit 1.
 - The report warns that per-channel output is tied to today's catalog: re-run from the original ISC when catalogs change.
 
 ### Catalog access
 
-Shared with `isc create` through `internal/catalog`, done the way oc-mirror does it (oc-mirror `upstream/main` at `4802bb8d`):
+Shared with `isc validate` and `isc create` through `internal/catalog`, done the way oc-mirror does it (oc-mirror `upstream/main` at `4802bb8d`):
 
 1. Resolve the reference to a digest (skipped when pinned).
 2. **Cache hit:** the unpacked configs for that digest exist in `<cache-dir>/catalogs/<digest>/`: use them.
@@ -149,7 +149,7 @@ Shared with `isc create` through `internal/catalog`, done the way oc-mirror does
 ```
 internal/optimise/         Optimise(): optimised ISC, per-package decisions, candidates and counts
 internal/olm/              OLMv0 channel order, upgrade path, edge matching
-internal/mirrorfilter/     oc-mirror's ISC -> catalog-filter conversion and filter runs
+internal/mirrorfilter/     filter runs and counts, using oc-mirror's conversion from internal/ocmirror/operator
 internal/versions/         Masterminds vs blang semver helpers, prerelease-aware minVersion strings
 internal/catalog/          digest lookup, OCI copy, configs extraction, cache (shared with create)
 ```
@@ -196,11 +196,16 @@ From operator-controller `main` (`internal/operator-controller/catalogmetadata/f
 
 ### Build steps
 
-1. `internal/catalog`: digest lookup, OCI copy, configs extraction, cache; an injectable source for tests.
+1. Reuse `internal/catalog` and `internal/validate`, built with `isc validate`.
 2. `internal/olm`, `internal/mirrorfilter`, `internal/versions`, with fixture tests.
 3. `internal/optimise`: skips, warning, per-channel selection, candidates, validity, auto, self-check.
 4. The command: `-o` formats, `--check`, `--package`, `--interactive`.
 5. Docs: README sections (why, upstream fix, assumption), `docs/compatibility.md`.
+
+## Upstream (oc-mirror)
+
+- **Worth upstreaming: yes, as the feature itself.** Optimise's algorithm is what operator upgrade-graph traversal inside oc-mirror would do: treat `minVersion` as the version clusters run and mirror exactly the bundles on OLM's path from it to each channel head. It would land in oc-mirror's operator filtering (`internal/pkg/operator/catalog_handler.go`, `filterPackage`) and catalog-filter (`pkg/filter/mirror-config/v1alpha1`, `channel.filterByVersionRange`), perhaps behind an ISC option like the platform's `shortestPath`.
+- **Still needed if oc-mirror followed the upgrade graph for operators: no.** oc-mirror would mirror the path itself; optimise exists only because it doesn't.
 
 ## Open questions (proposed answers)
 
@@ -210,7 +215,7 @@ None open; settled answers are in the design above. New questions go here.
 
 - **Unit tests** in `internal/olm`, `internal/mirrorfilter`, `internal/versions` on synthetic FBC fixtures in `testdata/catalogs/`, one per edge case: edges via `replaces`/`skips`/`skipRange`, skipped bundles, several bundles at `X`, multiple heads, cycles, bad `skipRange`, prerelease versions (`-rhodf`, `-opr-1`, `7.9.0-2`), emptied default channel, no bundle at `X`, replaces-only heads.
 - **Candidates:** an invalid candidate discarded and reported; every candidate invalid (input kept, `review` line); a package with listed `channels` (only those processed, none added, none lost); listed channels without the default channel (`defaultChannel` set); a `defaultChannel` outside the list (kept as is).
-- **Golden tests** (`go test ./... -update`) for each `-o` format: `yaml`, `json`, `kyaml` (the last two also load through the oc-mirror-style loader), `diff`, `text`, `table`.
+- **Golden tests** (`go test ./... -update`) for each `-o` format: `yaml`, `json`, `kyaml` (the last two also load with oc-mirror's `ReadConfig`), `diff`, `text`, `table`.
 - **Flags:** `--check` (exit 3 on change, 0 otherwise, with any `-o`); `--package`; `--interactive` with scripted terminal input (default accepted, another candidate chosen), and its error without a terminal.
 - **Output only on success:** a failed fetch, filter or self-check writes nothing to stdout and exits 1.
 - **Round trip:** comments and unrelated sections survive with `-o yaml` byte for byte; anchored input is flattened.
