@@ -12,18 +12,22 @@ The tools were first planned in [oc-mirror-automation](https://github.com/tom-st
 | `isc merge` | combines ISCs into one that mirrors at least what each of them does | planned | [merge-plan.md](merge-plan.md) |
 | `isc operators optimise` | the smallest operator selection that still lets clusters upgrade | planned | [optimise-plan.md](optimise-plan.md) |
 | `isc validate` | checks an ISC is valid and will run with oc-mirror, and that clusters could upgrade | planned | [validate-plan.md](validate-plan.md) |
+| `isc preview` | what an ISC will mirror: bundles, images, sizes, and a package's upgrade graph | planned | [preview-plan.md](preview-plan.md) |
 
 ```
 isc create --from-cluster [kubectl flags: --kubeconfig, --context, ...] [catalog flags] [-v]
 isc merge [-v] FILE...
 isc operators optimise [-o yaml|json|kyaml|diff|text|table] [--interactive] [--check] [--package NAME]... [catalog flags] [-v] FILE
 isc validate [--offline] [--strict] [catalog flags] [-v] FILE...
+isc preview [-o summary|tree|table|json|yaml] [--with-sizes] [--depth N] [--package NAME]... [catalog flags] [-v] FILE
+isc preview bundles|images|catalogs [-o text|json|yaml] ... FILE
+isc preview operator-graph --package NAME [--catalog REF] [--channel NAME] [--min-version VERSION] [--mirrored-only] [-o text|dot|json|yaml] ... FILE
 isc version
 ```
 
 Catalog flags: `--cache-dir DIR`, `--authfile FILE`, `--tls-verify=false`, `--platform OS/ARCH`, `--fetch-timeout SECONDS`.
 
-`isc create`, `isc merge` and `isc validate` work on the whole ISC, so they're top level. `isc operators optimise` only touches `mirror.operators`, so it sits under `isc operators`; a future command for `platform` or `additionalImages` would get its own group.
+`isc create`, `isc merge`, `isc validate` and `isc preview` work on the whole ISC, so they're top level. `isc operators optimise` only touches `mirror.operators`, so it sits under `isc operators`; a future command for `platform` or `additionalImages` would get its own group.
 
 Pipeline:
 
@@ -31,7 +35,7 @@ Pipeline:
 2. `isc merge cluster-*.yaml > merged.yaml`.
 3. Optionally, your own changes, outside isc: other tools or hand edits (see [Scope](#scope)).
 4. `isc operators optimise merged.yaml > isc.yaml`.
-5. `isc validate isc.yaml`.
+5. `isc validate isc.yaml`, and optionally `isc preview isc.yaml` to see what will be mirrored.
 6. `oc-mirror --v2 -c isc.yaml ...`.
 
 ## Plan / Design decisions
@@ -48,7 +52,7 @@ One module, `github.com/ayjM6/isc`, one binary, at the root of this repo.
 go.mod                      module github.com/ayjM6/isc
 main.go                     calls cli.Execute()
 internal/cli/               one cobra command per file: root.go, version.go, create.go, merge.go,
-                            validate.go, operators.go (the group), operators_optimise.go
+                            validate.go, preview.go, operators.go (the group), operators_optimise.go
                             (flags, usage, building the options; no logic)
 internal/yamlnode/          yaml.v3 node helpers, flatten.go, encode.go (2-space encoder)
 internal/ocmirror/          pinned copy of oc-mirror code (below); never edited by hand
@@ -58,8 +62,9 @@ internal/catalog/           digest lookup, OCI copy, configs extraction, digest-
 internal/create/
 internal/merge/
 internal/validate/          static, catalog and upgrade-path checks (validate plan); used by optimise
+internal/preview/           selection, image collection, counts and sizes (preview plan); used by optimise and validate
 internal/optimise/          with internal/olm/, internal/mirrorfilter/, internal/versions/ (optimise plan)
-testdata/{create,merge,optimise,validate,catalogs}/   fixtures (Go ignores testdata/ when building)
+testdata/{create,merge,optimise,validate,preview,catalogs}/   fixtures (Go ignores testdata/ when building)
 ```
 
 - **Why one program:** the commands share the loader and oc-mirror's code, the checks, the YAML node helpers, reference parsing, semver ordering and catalog access (optimise, and create for ClusterExtensions). One module means one `go.mod` to keep in step with oc-mirror's pins, and one build cache.
@@ -78,13 +83,13 @@ testdata/{create,merge,optimise,validate,catalogs}/   fixtures (Go ignores testd
 - **Messages:** on stderr, one line each: `review` lines always, decisions only with `-v`. Errors as `error: ...`, naming the file (and package or field) involved. Interactive prompts also go to stderr, with answers read from the terminal.
 - **Exit codes:** 0 success, 1 runtime error (and, for validate, an invalid ISC), 2 usage error, 3 `--check` found changes (optimise only).
 - **Determinism:** the same inputs give the same output bytes.
-- **Catalog access:** shared by validate, optimise and create, done the way oc-mirror does it; see [optimise-plan.md](optimise-plan.md#catalog-access). Same flags in both: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`.
+- **Catalog access:** shared by validate, preview, optimise and create, done the way oc-mirror does it; see [optimise-plan.md](optimise-plan.md#catalog-access). Same flags in both: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`.
 - **Libraries, not binaries:** no `opm`, `oc`, `skopeo` or `oc-mirror` subprocesses. oc-mirror's own helpers are under `internal/` and can't be imported, so the module uses the libraries they're built on:
 
 | Need | Library |
 |---|---|
 | Catalog references (parse, normalize, pin) | `go.podman.io/image/v5/docker/reference` |
-| Digest lookup, copying a catalog to an OCI layout | `go.podman.io/image/v5` |
+| Digest lookup, copying a catalog to an OCI layout, image manifests (preview sizes) | `go.podman.io/image/v5` |
 | Reading the OCI layout and extracting the configs layer | `github.com/google/go-containerregistry` |
 | Catalog model | `github.com/operator-framework/operator-registry` v1.74.0 (`alpha/declcfg`, `alpha/model`, `alpha/property`) |
 | oc-mirror's operator filter | `github.com/sherine-k/catalog-filter` (the version oc-mirror pins) |
@@ -136,12 +141,13 @@ Each step is one commit, or a short series, and leaves `just test` passing. READ
 
 1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile (with `sync-ocmirror`), the first `internal/ocmirror/` copy, CI workflow (including the sync check), `.goreleaser.yaml` and release workflow, `.gitignore`.
 2. **Documents:** `internal/isc` on top of `ocmirror/config`, and `internal/yamlnode`.
-3. **`isc validate`:** static tier; then `internal/catalog` and the catalog tier; then the upgrade-path tier.
-4. **`isc operators optimise`,** reusing `internal/catalog` and `internal/validate`, following its plan's build steps.
-5. **`isc merge`.**
-6. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
-7. **First tagged release.**
-8. **Move the practices into `AGENTS.md`:** once the commands are built, move the consistent practices that proved out (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, testing patterns) from this plan into `AGENTS.md`, as instructions for keeping commands consistent. Until then, this plan's shared behaviour is the source of truth.
+3. **`isc validate`:** static tier; then `internal/catalog` and the catalog tier; then `internal/olm` and the upgrade-path tier.
+4. **`isc preview`:** selection and views; `--with-sizes`; the list subcommands; `operator-graph`.
+5. **`isc operators optimise`,** reusing `internal/catalog`, `internal/validate` and `internal/preview`, following its plan's build steps.
+6. **`isc merge`.**
+7. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
+8. **First tagged release.**
+9. **Move the practices into `AGENTS.md`:** once the commands are built, move the consistent practices that proved out (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, testing patterns) from this plan into `AGENTS.md`, as instructions for keeping commands consistent. Until then, this plan's shared behaviour is the source of truth.
 
 ### Upstream (oc-mirror)
 
@@ -152,6 +158,7 @@ Each command plan has an "Upstream (oc-mirror)" section. In summary:
 | `create --from-cluster` | **Partly.** Generating an ISC from what a cluster runs fits oc-mirror (or `oc adm`), but oc-mirror never talks to clusters today; an `oc` plugin may fit better. | **Yes.** It supplies the installed versions such a mode would start from. |
 | `merge` | **Partly.** oc-mirror takes one `-c`; accepting several configs and merging them with these rules would remove the need, but it's general ISC tooling. | **Yes.** Unrelated to upgrade graphs. |
 | `operators optimise` | **Yes, as the feature itself:** operator upgrade-graph traversal in oc-mirror's filter. | **No.** oc-mirror would mirror the path itself. |
+| `preview` | **Yes.** oc-mirror's `--dry-run` already lists the images it would mirror (`mapping.txt`); a structured preview with sizes and the upgrade graph fits alongside. | **Yes.** Knowing what will be mirrored is useful whatever selects it. |
 | `validate` | **Yes.** The static tier is oc-mirror's already; the catalog tier is its filter run early (`--dry-run` failing fast, or a `validate` subcommand). | **Partly.** Static and catalog tiers still needed; the upgrade-path tier isn't. |
 
 Also worth upstreaming: making oc-mirror's config, API types and filter conversion public packages, so isc can drop its copy.
@@ -159,7 +166,7 @@ Also worth upstreaming: making oc-mirror's config, API types and filter conversi
 ## Open questions (proposed answers)
 
 1. **Reading clusters in Go or Ansible?** Decided: Go, as `isc create --from-cluster`, because the ClusterExtension catalog choice needs the catalog access optimise has. An Ansible role can still call it per inventory host.
-2. **Dependency weight:** operator-registry already brings client-go, so create's dynamic client and cli-runtime add little. Proposed: accept it; check `go mod why` after step 6, and record the release binary size per target.
+2. **Dependency weight:** operator-registry already brings client-go, so create's dynamic client and cli-runtime add little. Proposed: accept it; check `go mod why` after step 7, and record the release binary size per target.
 
 ## Verification
 

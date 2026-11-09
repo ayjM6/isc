@@ -57,7 +57,7 @@ Treats `minVersion` as the version clusters run, the same assumption as [`isc op
 | error | No OLMv0 upgrade path from `minVersion` to the default channel's head. |
 | error | A bundle on that path isn't mirrored. |
 | warning | The same, for another mirrored channel. |
-| `-v` | `isc operators optimise` would shrink this package (before and after counts). |
+| `-v` | `isc operators optimise` would shrink this package (before and after counts, from [`isc preview`](preview-plan.md)'s counting, `internal/preview`). |
 
 ### Evidence
 

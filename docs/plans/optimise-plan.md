@@ -81,7 +81,7 @@ For each channel a heads-only mirror would include, if the head's only edge is `
    - else **channel `minVersion` at the first hop** of the upgrade path, prerelease-aware, with every hop confirmed kept by the filter;
    - else **channel `minVersion: X`**, with a `review` line.
 4. Default channel: if the catalog's default channel has no candidate bundle, or isn't among the listed channels, set `defaultChannel` to the candidate channel with the newest head and make sure it's listed.
-5. Build three candidates and count bundles and images (bundle image + `relatedImages`, deduplicated per catalog entry) for each through the real filter:
+5. Build three candidates and count bundles and images (bundle image + `relatedImages`, deduplicated per catalog entry) for each through the real filter, with [`isc preview`](preview-plan.md)'s counting (`internal/preview`):
    - **package-minversion** (the package as it is);
    - **no-minversion** (heads only);
    - **per-channel** (steps 3–4).
@@ -196,7 +196,7 @@ From operator-controller `main` (`internal/operator-controller/catalogmetadata/f
 
 ### Build steps
 
-1. Reuse `internal/catalog` and `internal/validate`, built with `isc validate`.
+1. Reuse `internal/catalog` and `internal/validate` (built with `isc validate`) and `internal/preview` (built with `isc preview`) for selection, counts and the report's numbers.
 2. `internal/olm`, `internal/mirrorfilter`, `internal/versions`, with fixture tests.
 3. `internal/optimise`: skips, warning, per-channel selection, candidates, validity, auto, self-check.
 4. The command: `-o` formats, `--check`, `--package`, `--interactive`.

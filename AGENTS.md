@@ -8,12 +8,12 @@
 2. `isc merge`: combine them into one ISC that mirrors at least what each does (every operator, lowest `minVersion` per catalog).
 3. Optionally, your own changes, outside isc (other tools or hand edits).
 4. `isc operators optimise`: the smallest operator selection that still lets clusters upgrade.
-5. `isc validate`: check it's valid and will run with oc-mirror.
+5. `isc validate`: check it's valid and will run with oc-mirror; optionally `isc preview` to see what it will mirror.
 6. `oc-mirror --v2` on the result.
 
 The design is in [docs/plans/](docs/plans/). Read the relevant plan before changing behaviour:
 - [isc-tool-plan.md](docs/plans/isc-tool-plan.md): layout, shared behaviour, libraries, build and release, and the build order (what to do next);
-- one plan per subcommand, holding its rules and the oc-mirror / OLM sources they rely on: [create](docs/plans/create-plan.md), [merge](docs/plans/merge-plan.md), [optimise](docs/plans/optimise-plan.md), [validate](docs/plans/validate-plan.md).
+- one plan per subcommand, holding its rules and the oc-mirror / OLM sources they rely on: [create](docs/plans/create-plan.md), [merge](docs/plans/merge-plan.md), [optimise](docs/plans/optimise-plan.md), [validate](docs/plans/validate-plan.md), [preview](docs/plans/preview-plan.md).
 
 The tools were first planned in oc-mirror-automation; `isc` is written from scratch here.
 
@@ -27,8 +27,8 @@ internal/yamlnode/      yaml.v3 node helpers, flattening, 2-space encoder
 internal/ocmirror/      pinned copy of oc-mirror code (config loading, validation, API types, filter conversion)
 internal/isc/           ISC documents loaded with ocmirror/config: node tree plus typed view
 internal/catalog/       digest lookup, OCI copy, configs extraction, digest-keyed cache
-internal/{create,merge,optimise,validate}/   optimise also uses internal/{olm,mirrorfilter,versions}/
-testdata/{create,merge,optimise,validate,catalogs}/
+internal/{create,merge,optimise,validate,preview}/   optimise also uses internal/{olm,mirrorfilter,versions}/
+testdata/{create,merge,optimise,validate,preview,catalogs}/
 docs/plans/             plans, one per feature
 ```
 
