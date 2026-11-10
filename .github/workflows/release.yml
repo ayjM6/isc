@@ -1,0 +1,45 @@
+# On a semantic version tag (pushed, or created by cut-release): build the
+# tarballs and publish a GitHub release with git-cliff's notes as its description.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-tools
+        with:
+          git-cliff: "true"
+
+      - run: just check-tag "$TAG"
+      - run: just test
+      - run: just release-notes "$TAG" > "$RUNNER_TEMP/RELEASE_NOTES.md"
+
+      # Same goreleaser version as `just release-snapshot`.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.15.0
+          args: release --clean --release-notes ${{ runner.temp }}/RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

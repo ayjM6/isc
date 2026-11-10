@@ -1,0 +1,72 @@
+# Manual: works out the next version, tags the head of main, and runs the
+# release workflow for that tag.
+name: Cut release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (auto works it out from the commits)
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      prerelease:
+        description: Prerelease identifier, e.g. rc for vX.Y.Z-rc.N (empty for a release)
+        type: string
+        default: ""
+
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Refuse refs other than main
+        run: test "$GITHUB_REF" = refs/heads/main || { echo "::error::cut-release only runs on main"; exit 1; }
+
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-tools
+        with:
+          git-cliff: "true"
+
+      - run: just test
+
+      - id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: echo "version=$(just next-version "$BUMP" "$PRERELEASE")" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          just tag-release "$VERSION"
+          git push origin "$VERSION"
+
+  # A tag pushed with the workflow's own token doesn't trigger other workflows,
+  # so run the release workflow for it directly.
+  release:
+    needs: tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.version }}

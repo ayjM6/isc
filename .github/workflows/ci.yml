@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-tools
+      - run: just test
+      - run: just check-sync
+
+  conventional-commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-tools
+      - run: just check-commits "origin/$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+      - run: just check-title "$TITLE"
+        env:
+          TITLE: ${{ github.event.pull_request.title }}

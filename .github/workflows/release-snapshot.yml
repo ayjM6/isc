@@ -1,0 +1,34 @@
+# Builds every release target with goreleaser, without publishing, when a
+# change could break packaging. Other changes only need CI's amd64 build: the
+# binary is pure Go with CGO off, so arm64 rarely breaks on its own.
+# Paths filter the whole workflow, which is why this isn't a job in ci.yml.
+name: Release snapshot
+
+on:
+  push:
+    branches: [main]
+    paths: &release-paths
+      - .goreleaser.yaml
+      - go.mod
+      - go.sum
+      - cmd/isc/**
+      - justfile
+      - .github/**
+  pull_request:
+    paths: *release-paths
+
+permissions:
+  contents: read
+
+jobs:
+  release-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-tools
+      - run: just release-snapshot
