@@ -1,0 +1,65 @@
+package config
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/ayjM6/isc/internal/ocmirror/api/v2alpha1"
+)
+
+func TestDeleteComplete(t *testing.T) {
+
+	type spec struct {
+		name      string
+		config    v2alpha1.DeleteImageSetConfiguration
+		expConfig v2alpha1.DeleteImageSetConfiguration
+	}
+
+	cases := []spec{
+		{
+			name: "Invalid/UnsupportedReleaseArchitecture",
+			config: v2alpha1.DeleteImageSetConfiguration{
+				DeleteImageSetConfigurationSpec: v2alpha1.DeleteImageSetConfigurationSpec{
+					Delete: v2alpha1.Delete{
+						Platform: v2alpha1.Platform{
+							Architectures: []string{},
+							Channels: []v2alpha1.ReleaseChannel{
+								{
+									Name: "channel1",
+								},
+								{
+									Name: "channel2",
+								},
+							},
+						},
+					},
+				},
+			},
+			expConfig: v2alpha1.DeleteImageSetConfiguration{
+				DeleteImageSetConfigurationSpec: v2alpha1.DeleteImageSetConfigurationSpec{
+					Delete: v2alpha1.Delete{
+						Platform: v2alpha1.Platform{
+							Architectures: []string{v2alpha1.DefaultPlatformArchitecture},
+							Channels: []v2alpha1.ReleaseChannel{
+								{
+									Name: "channel1",
+								},
+								{
+									Name: "channel2",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			CompleteDelete(&c.config)
+			require.Equal(t, c.config, c.expConfig)
+		})
+	}
+}

@@ -1,0 +1,17 @@
+package config
+
+import (
+	"github.com/ayjM6/isc/internal/ocmirror/api/v2alpha1"
+)
+
+// Complete set default values in the DeleteImageSetConfiguration
+// when applicable
+func CompleteDelete(cfg *v2alpha1.DeleteImageSetConfiguration) {
+	completeReleaseArchitecturesDelete(cfg)
+}
+
+func completeReleaseArchitecturesDelete(cfg *v2alpha1.DeleteImageSetConfiguration) {
+	if len(cfg.Delete.Platform.Channels) != 0 && len(cfg.Delete.Platform.Architectures) == 0 {
+		cfg.Delete.Platform.Architectures = []string{v2alpha1.DefaultPlatformArchitecture}
+	}
+}
