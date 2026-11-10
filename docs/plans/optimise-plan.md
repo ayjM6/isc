@@ -8,7 +8,7 @@ Status: **planned**, not started. Replaces the earlier `isc operators prune` pla
 
 ```
 isc operators optimise [-o yaml|json|kyaml|diff|text|table] [--interactive] [--check] [--package NAME]...
-                       [--cache-dir DIR] [--authfile FILE] [--tls-verify=false] [--platform OS/ARCH] [--fetch-timeout SECONDS]
+                       [--cache-dir DIR] [--authfile FILE] [--tls-verify=false] [--fetch-timeout SECONDS]
                        [-v] FILE
 ```
 
@@ -131,24 +131,24 @@ On stdout, built in memory and written only on success:
 
 ### Catalog access
 
-Shared with `isc validate` and `isc create` through `internal/catalog`, done the way oc-mirror does it (oc-mirror `upstream/main` at `4802bb8d`):
+Shared with `isc validate`, `isc preview` and `isc create` through `internal/catalog`, designed in [validate's implementation design](validate-plan.md#internalcatalog). In short, the way oc-mirror does it (oc-mirror `0ff2c6c6`):
 
-1. Resolve the reference to a digest (skipped when pinned).
-2. **Cache hit:** the unpacked configs for that digest exist in `<cache-dir>/catalogs/<digest>/`: use them.
-3. **Miss:** copy `docker://REF@digest` for `--platform` (default `linux/amd64`) into an OCI layout with containers/image, as oc-mirror's `EnsureCatalogInOCIFormat` does through its mirror copier (`internal/pkg/operator/catalog_handler.go`). Same auth files, `registries.conf` and TLS handling as oc-mirror.
-4. Open the layout with go-containerregistry, read the `operators.operatorframework.io.index.configs.v1` label, and untar only that path, as `ExtractOCIConfigLayers` and `ExtractOCILayers` (`internal/pkg/manifest/oci-manifest.go`) do, into a temp directory renamed into place. The layout is then removed.
-5. `declcfg.LoadFS`.
+1. resolve the reference to its (index) digest, skipped when pinned;
+2. **cache hit:** the unpacked configs for that digest in `<cache-dir>/catalogs/`;
+3. **miss:** copy the **first manifest** of the catalog's index (oc-mirror's choice, whatever its architecture) into an OCI layout with containers/image (same auth files, `registries.conf` and TLS handling as oc-mirror); extract the path named by the `operators.operatorframework.io.index.configs.v1` label with go-containerregistry (a missing label is an error); rename into the cache; remove the layout;
+4. `declcfg.LoadFS`.
 
 - An `oci://` catalog reference is read from that layout directly: it's the image the ISC names.
 - **No pre-extracted catalogs:** no directory source or `REF=DIR` flag. Content always comes from the image the ISC references, unless that digest is already unpacked in the cache. Tests inject the catalog source in code.
-- Flags: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout` (per catalog, default 1800 s).
+- Flags: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--fetch-timeout` (per catalog, default 1800 s). No `--platform`.
 - Content-addressed: no expiry; a moved tag gives a new digest. To clear the cache, delete the directory.
 
 ### Code layout
 
 ```
 internal/optimise/         Optimise(): optimised ISC, per-package decisions, candidates and counts
-internal/olm/              OLMv0 channel order, upgrade path, edge matching
+internal/olm/              OLMv0 channel order (sortChannel), candidates (replaces/skips/skipRange), newest-candidate path;
+                           also used by validate's later steps (rule in validate-plan.md#later-steps)
 internal/mirrorfilter/     filter runs and counts, using oc-mirror's conversion from internal/ocmirror/operator
 internal/versions/         Masterminds vs blang semver helpers, prerelease-aware minVersion strings
 internal/catalog/          digest lookup, OCI copy, configs extraction, cache (shared with create)

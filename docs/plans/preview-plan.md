@@ -7,9 +7,9 @@ Status: **planned**, not started.
 `isc preview` shows what an ImageSetConfiguration (ISC) is actually going to mirror, before oc-mirror is run: which bundles and images, which catalogs, packages and channels bring them in, how big it is, and how a package's upgrade graph looks through the ISC.
 
 ```
-isc preview [-o summary|tree|table|json|yaml] [--with-sizes] [--depth N] [--package NAME]... [catalog flags] [-v] FILE
+isc preview [-o summary|tree|table|json|yaml] [--with-sizes [--platform OS/ARCH]] [--depth N] [--package NAME]... [catalog flags] [-v] FILE
 isc preview bundles  [-o text|json|yaml] [--package NAME]... [catalog flags] FILE
-isc preview images   [-o text|json|yaml] [--with-sizes] [--package NAME]... [catalog flags] FILE
+isc preview images   [-o text|json|yaml] [--with-sizes [--platform OS/ARCH]] [--package NAME]... [catalog flags] FILE
 isc preview catalogs [-o text|json|yaml] FILE
 isc preview operator-graph --package NAME [--catalog REF] [--channel NAME] [--min-version VERSION] [--mirrored-only]
                            [-o text|dot|json|yaml] [catalog flags] FILE
@@ -23,8 +23,8 @@ It can be run at any point; typically after `isc operators optimise`, alongside 
 
 ### Selection is oc-mirror's own
 
-- For each operator entry, fetch the catalog through the shared catalog access ([optimise plan](optimise-plan.md#catalog-access)) and run oc-mirror's filter from the pinned copy (`internal/ocmirror/operator`, `filterCatalog`; [tool plan](isc-tool-plan.md#loading-with-oc-mirrors-own-code)).
-- **Images** are what oc-mirror collects from the filtered catalog (`internal/pkg/operator/catalog_handler.go`, oc-mirror `4802bb8d`): each bundle's image plus its `relatedImages`, through `handleRelatedImages` (self-contained, extracted into the pinned copy by name), with the loop of `getRelatedImagesFromCatalog` (a method using oc-mirror's logger) implemented the same way and cited. Duplicates across bundles and packages are counted once, as oc-mirror does.
+- For each operator entry, fetch the catalog through the shared catalog access ([validate plan](validate-plan.md#internalcatalog)) and run oc-mirror's filter from the pinned copy (`internal/ocmirror/operator`, `filterCatalog`; [tool plan](isc-tool-plan.md#loading-with-oc-mirrors-own-code)).
+- **Images** are what oc-mirror collects from the filtered catalog (`internal/pkg/operator/catalog_handler.go`, oc-mirror `0ff2c6c6`): each bundle's image plus its `relatedImages`, through `handleRelatedImages` (self-contained, extracted into the pinned copy by name), with the loop of `getRelatedImagesFromCatalog` (a method using oc-mirror's logger) implemented the same way and cited. Duplicates across bundles and packages are counted once, as oc-mirror does.
 - **The catalog image** itself is listed too: oc-mirror mirrors a rebuilt, filtered catalog.
 - So the preview equals what oc-mirror would mirror, not an approximation.
 
@@ -53,6 +53,7 @@ On stdout, built in memory and written only on success:
 Opt-in. Without it, preview makes no registry calls beyond fetching the catalogs.
 
 - **Manifests only:** for each image, fetch its manifest, never its layers, and verify no signatures (signatures are separate artifacts oc-mirror handles while copying). A manifest lists each layer's and the config's compressed size (`layers[].size`, `config.size`). A multi-arch image means the index, then the manifest for `--platform`.
+- **`--platform OS/ARCH`** (default `linux/amd64`) picks which manifest of a multi-arch image is sized. It's the only command with a platform flag: catalogs themselves are always read from the first manifest of their index, as oc-mirror does.
 - Fetched with containers/image (`go.podman.io/image/v5`, `GetManifest`): the same auth, `registries.conf` and TLS handling as catalog fetches.
 - **Cache:** manifests are cached by digest in `<cache-dir>/manifests/`. Most operator images are pinned by digest, so entries never go stale; a tag reference is resolved to a digest first.
 - **Results:**
@@ -130,4 +131,4 @@ How the design keeps room for them:
 
 ## What was and wasn't run
 
-Planning only. oc-mirror's image collection was read in `internal/pkg/operator/catalog_handler.go` (`upstream/main` `4802bb8d`). No code exists yet.
+Planning only. oc-mirror's image collection was read in `internal/pkg/operator/catalog_handler.go` (`upstream/main` `4802bb8d`, unchanged at the pin `0ff2c6c6`). No code exists yet.

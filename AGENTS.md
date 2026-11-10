@@ -34,12 +34,12 @@ docs/plans/             plans, one per feature
 
 Everything is under `internal/` until the APIs settle.
 
-## Behaviour every command keeps
+## Behaviour every command keeps  
 
 Until the commands are built, the shared behaviour (input and output, loading with oc-mirror's code, messages, exit codes, catalog access, libraries) is defined in the tool plan's [Shared behaviour](docs/plans/isc-tool-plan.md#shared-behaviour-every-command) section: follow it, and change it there first. It moves here once it has proved out (the tool plan's last build step).
 
 - **Read-only against clusters:** `isc create --from-cluster` only lists and gets.
-- **Never edit `internal/ocmirror/` by hand:** it's a pinned copy of oc-mirror's code; change the pin and run `just sync-ocmirror`.
+- **Never edit `internal/ocmirror/` by hand:** it's a pinned copy of oc-mirror's code (commit in `internal/ocmirror/PIN`); change the pin and run `just sync-ocmirror`. The one exception is `internal/ocmirror/operator/exports.go`, hand-written wrappers that export the copied functions. `tests/unit/testdata/` is synced too.
 
 ## Go style
 

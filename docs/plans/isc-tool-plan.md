@@ -19,13 +19,13 @@ isc create --from-cluster [kubectl flags: --kubeconfig, --context, ...] [catalog
 isc merge [-v] FILE...
 isc operators optimise [-o yaml|json|kyaml|diff|text|table] [--interactive] [--check] [--package NAME]... [catalog flags] [-v] FILE
 isc validate [--offline] [--strict] [catalog flags] [-v] FILE...
-isc preview [-o summary|tree|table|json|yaml] [--with-sizes] [--depth N] [--package NAME]... [catalog flags] [-v] FILE
+isc preview [-o summary|tree|table|json|yaml] [--with-sizes [--platform OS/ARCH]] [--depth N] [--package NAME]... [catalog flags] [-v] FILE
 isc preview bundles|images|catalogs [-o text|json|yaml] ... FILE
 isc preview operator-graph --package NAME [--catalog REF] [--channel NAME] [--min-version VERSION] [--mirrored-only] [-o text|dot|json|yaml] ... FILE
 isc version
 ```
 
-Catalog flags: `--cache-dir DIR`, `--authfile FILE`, `--tls-verify=false`, `--platform OS/ARCH`, `--fetch-timeout SECONDS`.
+Catalog flags: `--cache-dir DIR`, `--authfile FILE`, `--tls-verify=false`, `--fetch-timeout SECONDS`. Catalogs are read from the first manifest in their index, as oc-mirror does, so there's no platform flag; `isc preview --with-sizes` alone takes `--platform OS/ARCH` for image sizes.
 
 `isc create`, `isc merge`, `isc validate` and `isc preview` work on the whole ISC, so they're top level. `isc operators optimise` only touches `mirror.operators`, so it sits under `isc operators`; a future command for `platform` or `additionalImages` would get its own group.
 
@@ -54,16 +54,18 @@ main.go                     calls cli.Execute()
 internal/cli/               one cobra command per file: root.go, version.go, create.go, merge.go,
                             validate.go, preview.go, operators.go (the group), operators_optimise.go
                             (flags, usage, building the options; no logic)
-internal/yamlnode/          yaml.v3 node helpers, flatten.go, encode.go (2-space encoder)
-internal/ocmirror/          pinned copy of oc-mirror code (below); never edited by hand
+internal/yamlnode/          yaml.v3 node helpers, flatten.go, encode.go (2-space encoder); arrives with optimise
+internal/ocmirror/          pinned copy of oc-mirror code (below); never edited by hand, except operator/exports.go
+tools/extractfuncs/         Go tool used by `just sync-ocmirror` to copy functions by name (not part of the binary)
+tests/unit/testdata/        testdata the copied oc-mirror tests read (synced; path fixed by oc-mirror's consts.TestFolder)
 internal/isc/               Document: an ISC loaded with ocmirror/config, as a yaml.v3 node tree
                             plus the typed v2alpha1 view
 internal/catalog/           digest lookup, OCI copy, configs extraction, digest-keyed cache
 internal/create/
 internal/merge/
-internal/validate/          static, catalog and upgrade-path checks (validate plan); used by optimise
+internal/validate/          validate's checks (validate plan); used by optimise
 internal/preview/           selection, image collection, counts and sizes (preview plan); used by optimise and validate
-internal/optimise/          with internal/olm/, internal/mirrorfilter/, internal/versions/ (optimise plan)
+internal/optimise/          with internal/olm/ (OLMv0 upgrade rules), internal/mirrorfilter/, internal/versions/ (optimise plan)
 testdata/{create,merge,optimise,validate,preview,catalogs}/   fixtures (Go ignores testdata/ when building)
 ```
 
@@ -83,7 +85,7 @@ testdata/{create,merge,optimise,validate,preview,catalogs}/   fixtures (Go ignor
 - **Messages:** on stderr, one line each: `review` lines always, decisions only with `-v`. Errors as `error: ...`, naming the file (and package or field) involved. Interactive prompts also go to stderr, with answers read from the terminal.
 - **Exit codes:** 0 success, 1 runtime error (and, for validate, an invalid ISC), 2 usage error, 3 `--check` found changes (optimise only).
 - **Determinism:** the same inputs give the same output bytes.
-- **Catalog access:** shared by validate, preview, optimise and create, done the way oc-mirror does it; see [optimise-plan.md](optimise-plan.md#catalog-access). Same flags in both: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`.
+- **Catalog access:** shared by validate, preview, optimise and create, done the way oc-mirror does it; see [validate's implementation design](validate-plan.md#internalcatalog). Same flags everywhere: `--cache-dir` (default `${XDG_CACHE_HOME:-~/.cache}/isc`), `--authfile`, `--tls-verify`, `--fetch-timeout`.
 - **Libraries, not binaries:** no `opm`, `oc`, `skopeo` or `oc-mirror` subprocesses. oc-mirror's own helpers are under `internal/` and can't be imported, so the module uses the libraries they're built on:
 
 | Need | Library |
@@ -108,18 +110,21 @@ oc-mirror v2 has no public packages (everything is under `internal/`, `cmd/` or 
 
 | Copy | From oc-mirror | How |
 |---|---|---|
-| `internal/ocmirror/config` | `internal/pkg/config`: `load.go`, `validate.go`, `defaults.go`, `metadata.go` (not `pin_catalogs.go`, which needs the mirror copier) | whole files |
-| `internal/ocmirror/api/v2alpha1` | `internal/pkg/api/v2alpha1` | whole package |
-| `internal/ocmirror/image`, `internal/ocmirror/consts` | `internal/pkg/image`, `internal/pkg/consts` | whole packages |
-| `internal/ocmirror/operator/filter.go` | `filterPackage`, `filterFromImageSetConfig`, `filterCatalog` from `internal/pkg/operator/catalog_handler.go` (the rest of that file needs the mirror copier, logging and manifest packages) | functions, extracted by name |
+| `internal/ocmirror/config` | `internal/pkg/config`: `load.go`, `validate.go`, `defaults.go`, `metadata.go`, with `load_test.go`, `validate_test.go`, `defaults_test.go` (not `pin_catalogs.go` or its test, which need oc-mirror's log, manifest and mirror packages) | whole files |
+| `internal/ocmirror/api/v2alpha1` | `internal/pkg/api/v2alpha1`: all 7 files and their tests | whole package |
+| `internal/ocmirror/image`, `internal/ocmirror/consts` | `internal/pkg/image`, `internal/pkg/consts`, with tests | whole packages |
+| `tests/unit/testdata/` | `config/valid.yaml`, `config/valid-delete.yaml`, `isc.yaml`, `delete-isc.yaml`, read by `load_test.go` through `consts.TestFolder` (`../../../tests/unit/testdata/`) | whole files |
+| `internal/ocmirror/operator/filter.go` | `filterPackage`, `filterFromImageSetConfig`, `filterCatalog`, `handleRelatedImages` from `internal/pkg/operator/catalog_handler.go` (the rest of that file needs the mirror copier, logging and manifest packages) | functions, extracted by name (`tools/extractfuncs`) |
 
-- **Unmodified except import paths.** About 1,300 lines; their other imports (`sigs.k8s.io/yaml`, Masterminds semver, apimachinery, go-digest, operator-registry, catalog-filter) are dependencies anyway.
-- **Sync:** `just sync-ocmirror REF` fetches the pinned module (`go mod download github.com/openshift/oc-mirror/v2@REF`), copies the files and functions, and rewrites import paths. CI re-runs it at the pinned commit and fails on any diff. Never edit `internal/ocmirror/` by hand: change the pin and re-sync.
-- **Pin:** the oc-mirror commit (`4802bb8d` when planned), recorded in `internal/ocmirror/README.md` and `docs/compatibility.md`, and printed by `isc version`. Moving it means re-syncing and re-running the tests.
-- **Licence:** oc-mirror is Apache-2.0. The copied files keep their headers; `internal/ocmirror/LICENSE` holds the Apache-2.0 text, and the README states the source, the commit and the import-path change.
+- **Unmodified except import paths.** About 1,300 lines; their other imports (`sigs.k8s.io/yaml`, Masterminds semver, apimachinery, go-digest, operator-registry, catalog-filter; testify for the tests) are dependencies anyway, at the versions oc-mirror's `go.mod` pins (`sigs.k8s.io/yaml` v1.6.0 matters: one copied test checks its exact error text).
+- **Closed set:** checked at the pin: nothing copied imports an oc-mirror package outside the set. The copied tests run in `go test ./...`, proving the copy works.
+- **One hand-written file:** `internal/ocmirror/operator/exports.go`, marked as such, exports wrappers (`FilterConfig`, `FilterCatalog`) for the unexported functions. It's the only file under `internal/ocmirror/` the sync doesn't own.
+- **Sync:** `just sync-ocmirror [REF]` (default: the commit in `internal/ocmirror/PIN`) fetches the module (`go mod download -json github.com/openshift/oc-mirror/v2@REF`), copies the files, extracts the functions with `tools/extractfuncs`, rewrites `github.com/openshift/oc-mirror/v2/internal/pkg/` to `github.com/ayjM6/isc/internal/ocmirror/`, and runs `gofmt`. CI re-runs it at `PIN` and fails on any diff. Never edit the synced files by hand: change the pin and re-sync.
+- **Pin:** oc-mirror `upstream/main` at `0ff2c6c6` (the plans were first written against `4802bb8d`; the copied files and functions are unchanged between them). Recorded in `internal/ocmirror/PIN`, `internal/ocmirror/README.md` and `docs/compatibility.md`, and printed by `isc version`. Moving it means re-syncing, aligning `go.mod` with oc-mirror's versions, and re-running the tests.
+- **Licence:** oc-mirror is Apache-2.0, and its source files carry no headers. `internal/ocmirror/LICENSE` holds the Apache-2.0 text, and `internal/ocmirror/README.md` gives the attribution: source repository, commit, files, and the import-path change.
 - **Loading** is `ocmirror/config.ReadConfig`: strict YAML, `kind` and stanza checks, unknown fields rejected (including `metadata`), and all of `Validate` (duplicate catalogs, packages and channels; semver versions; package and channel ranges not mixed; duplicate release channels; `platform.platforms` with `platform.architectures`; blocked-image regexes). So every command accepts exactly what oc-mirror accepts.
 - `internal/isc.Document` keeps the typed `v2alpha1.ImageSetConfiguration` for reading and the yaml.v3 node tree for editing, so comments and key order are kept.
-- **Not copied:** oc-mirror's catalog extraction (`EnsureCatalogInOCIFormat`, `ExtractOCIConfigLayers`, `ExtractOCILayers`) depends on its mirror copier and archive packages, so `internal/catalog` implements the same steps, citing them ([optimise plan](optimise-plan.md#catalog-access)).
+- **Not copied:** oc-mirror's catalog extraction (`EnsureCatalogInOCIFormat`, `ExtractOCIConfigLayers`, `ExtractOCILayers`) depends on its mirror copier and archive packages, so `internal/catalog` implements the same steps, citing them ([validate plan](validate-plan.md#internalcatalog)).
 - **Upstream:** ask oc-mirror to expose its config, API types and filter conversion as public packages; then drop the copy.
 
 ### Build and release
@@ -196,11 +201,21 @@ Create the GitHub App and its two secrets; add the App as a bypass actor on `mai
 
 Each step is one commit, or a short series, and leaves `just test` passing. README updates land with each step, not at the end.
 
+Pull requests: steps 1 and 2 are one **groundwork** PR (`feat/groundwork`); step 3 is the **validate** PR (`feat/validate`); later steps get their own.
+
+**Groundwork PR in detail:**
+- `go.mod`: `module github.com/ayjM6/isc`, `go 1.26.3`, versions matching oc-mirror at the pin (`sigs.k8s.io/yaml` v1.6.0, Masterminds semver v3.5.0, apimachinery v0.37.2, operator-registry v1.74.0, go-digest v1.0.0, cobra v1.10.2, testify v1.12.1), plus `gopkg.in/yaml.v3`.
+- `main.go` → `cli.Execute()`; `internal/cli/root.go`: cobra root, persistent `-v`, `SilenceUsage`; usage errors exit 2, other errors 1, printed as `error: ...` on stderr; `internal/cli/version.go`: `isc version` / `--version` print the version, the oc-mirror pin and the Go version.
+- The `internal/ocmirror/` copy, `PIN`, `README.md`, `LICENSE`, `tests/unit/testdata/`, `tools/extractfuncs` and `just sync-ocmirror`.
+- `internal/isc`: `Document{Path string; Config v2alpha1.ImageSetConfiguration; Node *yaml.Node}`; `Load(path) (*Document, error)` calls `config.ReadConfig(path, ImageSetConfigurationKind)` (errors wrapped with the path; the aggregate kept so callers can split it into findings) and parses the same bytes into a yaml.v3 node tree.
+- Release automation: justfile recipes, `cliff.toml`, `.goreleaser.yaml`, the three workflows, a placeholder `CHANGELOG.md`, `.gitignore` (`dist/`), a README skeleton (install, usage stub, maintainer setup).
+- Checks: `just test` (gofmt, vet, the copied oc-mirror tests passing unmodified, `internal/isc` tests: a valid ISC, `metadata` rejected, the aggregate split); `just sync-ocmirror` leaves no diff; `isc version`; `just release-snapshot` and `just next-version` (goreleaser and git-cliff aren't installed locally yet: CI runs them, or install them to check locally).
+
 1. **Skeleton:** `go.mod`, `main.go`, cobra root and `isc version`, justfile with the recipes above, the first `internal/ocmirror/` copy, `cliff.toml`, `.goreleaser.yaml`, the three workflows (CI, cut-release, release), a placeholder `CHANGELOG.md`, `.gitignore`.
-2. **Documents:** `internal/isc` on top of `ocmirror/config`, and `internal/yamlnode`.
-3. **`isc validate`:** static tier; then `internal/catalog` and the catalog tier; then `internal/olm` and the upgrade-path tier.
+2. **Documents:** `internal/isc` on top of `ocmirror/config` (`internal/yamlnode` waits for optimise: validate writes no ISC).
+3. **`isc validate`, first version** ("will oc-mirror run?"): `internal/ocmirror/operator`, `internal/catalog`, `internal/validate`, the command; see [validate's implementation design](validate-plan.md#implementation-design).
 4. **`isc preview`:** selection and views; `--with-sizes`; the list subcommands; `operator-graph`.
-5. **`isc operators optimise`,** reusing `internal/catalog`, `internal/validate` and `internal/preview`, following its plan's build steps.
+5. **`isc operators optimise`,** reusing `internal/catalog`, `internal/validate` and `internal/preview`, and building `internal/olm` and `internal/yamlnode`, following its plan's build steps; then validate's [later steps](validate-plan.md#later-steps).
 6. **`isc merge`.**
 7. **`isc create --from-cluster`,** OLM v0 first, then OLM v1.
 8. **First release** through the cut-release action: a `-rc.1` prerelease first, then the release.

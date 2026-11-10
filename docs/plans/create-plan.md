@@ -7,7 +7,7 @@ Status: **planned**, not started.
 Read what a cluster has installed (OLM v0 Subscriptions and OLM v1 ClusterExtensions), and output an ImageSetConfiguration (ISC) on stdout that pins each installed operator to its installed version.
 
 ```
-isc create --from-cluster [kubectl flags: --kubeconfig, --context, ...] [--cache-dir DIR] [--authfile FILE] [--tls-verify=false] [--platform OS/ARCH] [--fetch-timeout SECONDS] [-v]
+isc create --from-cluster [kubectl flags: --kubeconfig, --context, ...] [--cache-dir DIR] [--authfile FILE] [--tls-verify=false] [--fetch-timeout SECONDS] [-v]
 ```
 
 `create` is a top-level command because it makes a new ISC rather than editing one; `--from-cluster` names the source, so other sources can be added later as other `--from-...` flags. For now `--from-cluster` is the only source and is required (without it: usage error, exit 2).
@@ -71,7 +71,7 @@ But the resolver's choice is deterministic (`internal/operator-controller/resolv
 
 So `create` repeats that choice:
 - if only one ClusterCatalog matches the selector, use it;
-- otherwise load each candidate's catalog through `internal/catalog`, with the same cache and flags as `isc operators optimise` (`--cache-dir`, `--authfile`, `--tls-verify`, `--platform`, `--fetch-timeout`; see [optimise-plan.md](optimise-plan.md#catalog-access)). The candidates may be in a mirror registry with its own credentials or CA. Keep those that have the package and the installed bundle name, and take the highest priority;
+- otherwise load each candidate's catalog through `internal/catalog`, with the same cache and flags as `isc operators optimise` (`--cache-dir`, `--authfile`, `--tls-verify`, `--fetch-timeout`; see [validate-plan.md](validate-plan.md#internalcatalog)). The candidates may be in a mirror registry with its own credentials or CA. Keep those that have the package and the installed bundle name, and take the highest priority;
 - cross-check that the bundle's image equals the recorded `bundle-reference`;
 - a tie, no match, or a `bundle-reference` mismatch is `review`.
 
